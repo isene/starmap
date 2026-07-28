@@ -1,0 +1,22 @@
+[package]
+name = "fe2o3-starmap"
+version = "0.1.0"
+edition = "2021"
+authors = ["Geir Isene <g@isene.com>"]
+description = "The naked-eye sky in braille: 9,096 stars with distances, constellation figures, planisphere and hemisphere projections, and an interactive star picker."
+license = "Unlicense"
+repository = "https://github.com/isene/starmap"
+readme = "README.md"
+keywords = ["astronomy", "terminal", "tui", "stars", "braille"]
+categories = ["command-line-interface", "science"]
+exclude = ["img/*"]
+
+[lib]
+name = "starmap"
+
+[dependencies]
+crust = { version = "0.1.46", path = "../crust", package = "fe2o3-crust" }
+
+[profile.release]
+opt-level = 3
+lto = true
