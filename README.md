@@ -1,5 +1,7 @@
 # starmap
 
+<img src="img/starmap.svg" align="right" width="150">
+
 ![Rust](https://img.shields.io/badge/language-Rust-f74c00) ![License](https://img.shields.io/badge/license-Unlicense-green) [![Fe2O3](https://img.shields.io/badge/suite-Fe%E2%82%82O%E2%82%83-b7410e)](https://github.com/isene/fe2o3)
 
 The naked-eye sky in a terminal, drawn in braille. Part of the
