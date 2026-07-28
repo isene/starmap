@@ -50,27 +50,18 @@ pub fn pick(start: View, mut opts: Opts, title: &str) -> Option<Picked> {
         Crust::clear_screen();
         print!("{}", p.frame);
 
-        // The crosshair, and a ring around whatever it has hold of.
-        if let Some(i) = target {
-            if let Some(&(_, x, y)) = p.placed.iter().find(|&&(j, _, _)| j == i) {
-                print!(
-                    "{}{}",
-                    Cursor::at(1 + x as u16 / 2, 2 + y as u16 / 4),
-                    style::rgb("(", Some((255, 220, 120)), None, "b")
-                );
-                print!(
-                    "{}{}",
-                    Cursor::at(3 + x as u16 / 2, 2 + y as u16 / 4),
-                    style::rgb(")", Some((255, 220, 120)), None, "b")
-                );
-            }
-        } else {
-            print!(
-                "{}{}",
-                Cursor::at(1 + cur.0 as u16 / 2, 2 + cur.1 as u16 / 4),
-                style::rgb("+", Some((255, 220, 120)), None, "b")
-            );
-        }
+        // The crosshair, or the star it has hold of. Marking the star's
+        // own cell rather than bracketing it keeps the mark off its
+        // neighbours' name labels, which are only two columns away.
+        let (mark, at) = match target.and_then(|i| p.placed.iter().find(|&&(j, _, _)| j == i)) {
+            Some(&(_, x, y)) => ("*", (1 + x as u16 / 2, 2 + y as u16 / 4)),
+            None => ("+", (1 + cur.0 as u16 / 2, 2 + cur.1 as u16 / 4)),
+        };
+        print!(
+            "{}{}",
+            Cursor::at(at.0, at.1),
+            style::rgb(mark, Some((255, 220, 120)), None, "b")
+        );
 
         // Title row and the star under the crosshair.
         let where_ = match view.proj {

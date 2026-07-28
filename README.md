@@ -13,6 +13,8 @@ cached:
   numbers and IAU proper names.
 - **150 constellation strokes** from d3-celestial.
 
+![the star picker](img/screenshot-pick.png)
+
 ## Two skies
 
 ```rust
