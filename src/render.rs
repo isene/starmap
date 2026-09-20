@@ -1,8 +1,9 @@
-//! Drawing a sky into a rectangle of character cells.
+//! Drawing a sky into a rectangle of character cells: braille, or a
+//! picture for glow with the names as text showing through holes.
 
 use crate::canvas::Canvas;
 use crate::proj::{Projection, View};
-use crate::{figures, star_rgb, stars};
+use crate::{figures, star_rgb, star_teff, stars, teff_rgb};
 use crust::style;
 use crust::Cursor;
 
@@ -221,6 +222,215 @@ pub(crate) fn plot(
     Plot { frame, placed, mag_shown }
 }
 
+/// A chart drawn in real pixels: the text to print first (only the
+/// names and cardinal points; the picture has holes where they sit), the
+/// picture for `Display::show_canvas`, where each star landed in pixels,
+/// and the magnitude limit that was shown.
+pub struct Picture {
+    pub text: String,
+    pub canvas: glow::Canvas,
+    /// `(index into stars(), pixel x, pixel y)` for every star drawn.
+    pub placed: Vec<(usize, i32, i32)>,
+    pub mag_shown: f64,
+}
+
+/// Draw the sky as a picture for the rectangle at (`x`, `y`), `w`×`h`
+/// cells at the terminal's cell size. Print the text, then show the canvas
+/// at (`x`, `y`).
+pub fn panel_pixels(view: &View, opts: &Opts, bodies: &[Body], x: u16, y: u16, w: u16, h: u16) -> Picture {
+    picture(view, opts, bodies, x, y, w, h, glow::get_cell_size())
+}
+
+/// The same for a given cell size.
+pub fn picture(view: &View, opts: &Opts, bodies: &[Body], x: u16, y: u16, w: u16, h: u16, cell: (u16, u16)) -> Picture {
+    let (cw, ch) = (w.max(10), h.max(3));
+    let mut c = glow::Canvas::with_cell(cw, ch, cell);
+    let (cell_w, cell_h) = (c.cell.0 as f64, c.cell.1 as f64);
+    // Pixels per braille dot: the unit the braille chart's sizes are in.
+    let dot = (cell_w / 2.0 + cell_h / 4.0) / 2.0;
+    let (pw, ph) = (c.w as f64, c.h as f64);
+    let (cx, cy) = (pw / 2.0, ph / 2.0);
+    let r = pw.min(ph) / 2.0 - 2.0 * dot;
+
+    // How faint this much room can take, as for braille, with pixels
+    // letting stars sit about twice as close as dots do.
+    let dots = std::f64::consts::PI * r * r / (dot * dot) * 4.0;
+    let fits = ((2.0 * 0.10 * dots * view.zoom * view.zoom).log10() - 0.68) / 0.5;
+    let mag_shown = opts.mag.min(fits).max(1.0);
+
+    let to_px = |u: (f64, f64)| (cx + u.0 * r, cy + u.1 * r);
+    let in_frame = |p: (f64, f64)| p.0 >= -dot && p.1 >= -dot && p.0 < pw + dot && p.1 < ph + dot;
+
+    if opts.rim {
+        let rr = r * view.zoom;
+        let (ox, oy) = (cx - view.pan.0 * r * view.zoom, cy - view.pan.1 * r * view.zoom);
+        if rr < pw * 4.0 {
+            ring(&mut c, ox, oy, rr, dot * 0.4, (70, 70, 85));
+        }
+    }
+
+    if opts.figures {
+        let ink = if r < 40.0 * dot { (46, 60, 88) } else { (60, 78, 110) };
+        for fig in figures() {
+            for pair in fig.pts.windows(2) {
+                let (Some(a), Some(b)) = (view.screen(pair[0].0, pair[0].1), view.screen(pair[1].0, pair[1].1)) else { continue };
+                let (p, q) = (to_px(a), to_px(b));
+                if !in_frame(p) && !in_frame(q) {
+                    continue;
+                }
+                stroke(&mut c, p, q, dot * 0.35, ink);
+            }
+        }
+    }
+
+    // Stars, faintest first so the bright ones paint over. A star's
+    // size follows its magnitude, its colour its temperature, and the
+    // faintest fade a little so the eye sorts them the way the sky does.
+    let mut shown: Vec<(usize, (f64, f64))> = Vec::new();
+    for (i, s) in stars().iter().enumerate() {
+        if s.mag > mag_shown {
+            break;
+        }
+        let Some(u) = view.screen(s.ra, s.dec) else { continue };
+        let p = to_px(u);
+        if in_frame(p) {
+            shown.push((i, p));
+        }
+    }
+    let mut placed = Vec::with_capacity(shown.len());
+    let mut star_labels: Vec<(u16, u16, String, (u8, u8, u8))> = Vec::new();
+    for &(i, p) in shown.iter().rev() {
+        let s = &stars()[i];
+        let rgb = teff_rgb(star_teff(s));
+        let fade = (1.0 - 0.10 * (s.mag - mag_shown + 3.0).max(0.0)).clamp(0.5, 1.0);
+        let rgb = ((rgb.0 as f64 * fade) as u8, (rgb.1 as f64 * fade) as u8, (rgb.2 as f64 * fade) as u8);
+        let radius = (dot * (0.28 + 0.15 * (mag_shown - s.mag))).min(dot * 1.9);
+        blob(&mut c, p, radius, rgb, s.mag < 1.0);
+        placed.push((i, p.0 as i32, p.1 as i32));
+        let earns = s.mag < 1.8 + (view.zoom.log2() * 1.2).max(0.0);
+        if opts.names && !s.name.is_empty() && earns && w >= 40 && h >= 10 {
+            let (col, row) = (x + (p.0 / cell_w) as u16 + 2, y + (p.1 / cell_h) as u16);
+            if col + s.name.len() as u16 + 1 < x + w {
+                star_labels.push((col, row, s.name.to_string(), (150, 150, 165)));
+            }
+        }
+    }
+
+    let mut body_labels: Vec<(u16, u16, String, (u8, u8, u8))> = Vec::new();
+    for b in bodies {
+        let Some(u) = view.screen(b.ra, b.dec) else { continue };
+        let p = to_px(u);
+        if !in_frame(p) {
+            continue;
+        }
+        blob(&mut c, p, dot * (0.6 + 0.5 * b.size.max(0) as f64), b.rgb, b.size >= 2);
+        let (col, row) = (x + (p.0 / cell_w) as u16 + 2, y + (p.1 / cell_h) as u16);
+        if col + b.name.len() as u16 + 1 < x + w {
+            body_labels.push((col, row, b.name.clone(), b.rgb));
+        }
+    }
+
+    let mut taken: Vec<(u16, u16, u16)> = Vec::new();
+    let mut text = String::new();
+    if let Projection::Horizon { .. } = view.proj {
+        for (label, az) in [("N", 0.0f64), ("E", 90.0), ("S", 180.0), ("W", 270.0)] {
+            let a = az.to_radians();
+            let p = to_px(((-a.sin() - view.pan.0) * view.zoom, (-a.cos() - view.pan.1) * view.zoom));
+            if !in_frame(p) {
+                continue;
+            }
+            let (col, row) = (x + (p.0 / cell_w) as u16, y + (p.1 / cell_h) as u16);
+            if col >= x + w || row >= y + h {
+                continue;
+            }
+            taken.push((row, col, col + 1));
+            c.hole((row - y) as usize, (col - x) as usize, 1);
+            text.push_str(&Cursor::at(col, row));
+            text.push_str(&style::rgb(label, Some((255, 190, 90)), None, "b"));
+        }
+    }
+    for (col, row, label, rgb) in body_labels.into_iter().chain(star_labels) {
+        let n = label.chars().count() as u16;
+        let end = col + n;
+        if row >= y + h || taken.iter().any(|&(r, c0, c1)| r == row && col <= c1 && c0 <= end) {
+            continue;
+        }
+        taken.push((row, col, end));
+        c.hole((row - y) as usize, (col - x) as usize, n as usize);
+        text.push_str(&Cursor::at(col, row));
+        text.push_str(&style::rgb(&label, Some(rgb), None, ""));
+    }
+
+    Picture { text, canvas: c, placed, mag_shown }
+}
+
+/// Brighten a pixel to at least `rgb` scaled by `k`: things that overlap
+/// add up to the brighter of them, never to darker.
+fn lift(c: &mut glow::Canvas, x: i64, y: i64, rgb: (u8, u8, u8), k: f64) {
+    if x < 0 || y < 0 || x as usize >= c.w || y as usize >= c.h {
+        return;
+    }
+    let o = (y as usize * c.w + x as usize) * 4;
+    let want = [rgb.0, rgb.1, rgb.2].map(|v| (v as f64 * k).round().clamp(0.0, 255.0) as u8);
+    for (i, w) in want.iter().enumerate() {
+        if c.rgba[o + i] < *w {
+            c.rgba[o + i] = *w;
+        }
+    }
+    c.rgba[o + 3] = 255;
+}
+
+/// A soft-edged disc, with a faint glow around it when `bright`.
+fn blob(c: &mut glow::Canvas, p: (f64, f64), r: f64, rgb: (u8, u8, u8), bright: bool) {
+    let reach = if bright { r * 2.4 } else { r + 1.0 };
+    let (x0, x1) = ((p.0 - reach).floor() as i64, (p.0 + reach).ceil() as i64);
+    let (y0, y1) = ((p.1 - reach).floor() as i64, (p.1 + reach).ceil() as i64);
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            let d = ((x as f64 + 0.5 - p.0).powi(2) + (y as f64 + 0.5 - p.1).powi(2)).sqrt();
+            let k = if d <= r + 0.5 {
+                (r + 0.5 - d).clamp(0.0, 1.0)
+            } else if bright {
+                (0.22 * (1.0 - (d - r) / (1.4 * r))).max(0.0)
+            } else {
+                0.0
+            };
+            if k > 0.0 {
+                lift(c, x, y, rgb, k);
+            }
+        }
+    }
+}
+
+/// A line of `thick` pixels from `a` to `b`.
+fn stroke(c: &mut glow::Canvas, a: (f64, f64), b: (f64, f64), thick: f64, rgb: (u8, u8, u8)) {
+    let n = ((b.0 - a.0).abs().max((b.1 - a.1).abs()) * 1.5).ceil().max(1.0) as usize;
+    let r = (thick / 2.0).max(0.5);
+    for i in 0..=n {
+        let f = i as f64 / n as f64;
+        let (x, y) = (a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f);
+        if r <= 0.6 {
+            lift(c, x as i64, y as i64, rgb, 1.0);
+        } else {
+            blob(c, (x, y), r, rgb, false);
+        }
+    }
+}
+
+/// A circle of radius `r` about (`cx`, `cy`), `thick` pixels wide.
+fn ring(c: &mut glow::Canvas, cx: f64, cy: f64, r: f64, thick: f64, rgb: (u8, u8, u8)) {
+    let steps = ((r * 3.0) as usize).clamp(360, 12000);
+    let rr = (thick / 2.0).max(0.5);
+    for i in 0..steps {
+        let a = i as f64 * std::f64::consts::TAU / steps as f64;
+        let p = (cx + r * a.sin(), cy + r * a.cos());
+        if p.0 < -rr || p.1 < -rr || p.0 > c.w as f64 + rr || p.1 > c.h as f64 + rr {
+            continue;
+        }
+        if rr <= 0.6 { lift(c, p.0 as i64, p.1 as i64, rgb, 1.0) } else { blob(c, p, rr, rgb, false) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +455,41 @@ mod tests {
         v.zoom = 8.0;
         let close = plot(&v, &Opts::default(), &[], 1, 1, 100, 30).mag_shown;
         assert!(close > wide, "zoomed in should reach fainter: {wide} -> {close}");
+    }
+
+    #[test]
+    fn the_picture_places_stars_and_cuts_holes_for_their_names() {
+        let v = View::new(Projection::Hemisphere { north: true });
+        let p = picture(&v, &Opts::default(), &[], 1, 2, 100, 30, (10, 20));
+        assert_eq!((p.canvas.w, p.canvas.h), (1000, 600));
+        assert!(p.placed.len() > 500, "only {} stars", p.placed.len());
+        assert!(p.text.contains("Vega") && p.text.contains("Arcturus"), "the bright stars are named: {}", p.text.replace('\x1b', "^"));
+        let holes = p.canvas.rgba.chunks(4).filter(|px| px[3] == 0).count();
+        assert!(holes > 0 && holes % 200 == 0, "{holes} transparent pixels, whole cells of 200");
+        let lit = p.canvas.rgba.chunks(4).filter(|px| px[3] == 255 && px[0].max(px[1]).max(px[2]) > 40).count();
+        assert!(lit > 2000, "only {lit} lit pixels");
+        // Polaris sits near the middle, and its pixel is white-ish and bright.
+        let polaris = p.placed.iter().find(|&&(i, _, _)| stars()[i].name == "Polaris").map(|&(_, x, y)| (x, y)).unwrap();
+        let o = (polaris.1 as usize * p.canvas.w + polaris.0 as usize) * 4;
+        assert!(p.canvas.rgba[o] > 150 && p.canvas.rgba[o + 2] > 150, "Polaris pixel {:?}", &p.canvas.rgba[o..o + 3]);
+    }
+
+    #[test]
+    fn one_picture_is_quick_enough() {
+        let v = View::new(Projection::Hemisphere { north: true });
+        let o = Opts::default();
+        let t = std::time::Instant::now();
+        for _ in 0..3 {
+            let _ = picture(&v, &o, &[], 1, 2, 190, 50, (10, 20));
+        }
+        let per = t.elapsed() / 3;
+        assert!(per.as_millis() < 400, "one picture took {per:?}");
+        eprintln!("one picture: {per:?}");
+        // STARMAP_DUMP=/some/file.png writes the picture out for a look.
+        if let Ok(path) = std::env::var("STARMAP_DUMP") {
+            let v = View::new(Projection::Horizon { lst_deg: 40.0, lat_deg: 59.9 });
+            let _ = std::fs::write(path, picture(&v, &o, &[], 1, 2, 190, 50, (10, 20)).canvas.png());
+        }
     }
 
     #[test]

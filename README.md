@@ -4,7 +4,9 @@
 
 ![Rust](https://img.shields.io/badge/language-Rust-f74c00) ![License](https://img.shields.io/badge/license-Unlicense-green) [![Fe2O3](https://img.shields.io/badge/suite-Fe%E2%82%82O%E2%82%83-b7410e)](https://github.com/isene/fe2o3)
 
-The naked-eye sky in a terminal, drawn in braille. Part of the
+The naked-eye sky in a terminal: real pixels through glow where the
+terminal shows images, braille elsewhere. Star colours are black-body
+colours for each star's temperature. Part of the
 [Fe₂O₃](https://github.com/isene/fe2o3) Rust terminal suite.
 
 Two tables live in the library, so nothing is fetched and nothing is
@@ -98,8 +100,11 @@ and planets on the sky it draws for the selected hour.
 
 ## Cost
 
-A frame is arithmetic over the two tables and one braille canvas: about
-2 ms for a full screen, nothing at all between keypresses. The chart
+A braille frame is arithmetic over the two tables and one canvas: about
+2 ms for a full screen. A pixel frame of a full screen takes about
+30 ms, most of it the soft edges of the stars.
+
+Nothing at all runs between keypresses. The chart
 scales how faint it goes to the room it has and the zoom it is at, so a
 pane fifteen rows high shows the constellation stars and a full screen
 shows the sky.
