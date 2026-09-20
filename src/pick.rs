@@ -59,7 +59,6 @@ pub fn pick(start: View, mut opts: Opts, title: &str) -> Option<Picked> {
         };
 
         Crust::clear_screen();
-        display.clear_all();
         let yellow = (255, 220, 120);
         let (target, mag_shown) = if pixels {
             let mut p = picture(&view, &opts, &[] as &[Body], 1, 2, w, h, None);
@@ -79,7 +78,7 @@ pub fn pick(start: View, mut opts: Opts, title: &str) -> Option<Picked> {
                 }
             }
             print!("{}", p.text);
-            display.show_canvas(&p.canvas, 1, 2);
+            display.swap_canvas(&p.canvas, 1, 2);
             (target, p.mag_shown)
         } else {
             let p = plot(&view, &opts, &[] as &[Body], 1, 2, w, h);
