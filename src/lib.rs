@@ -15,8 +15,9 @@
 //!
 //! [`panel`] draws a chart into a rectangle in braille; [`panel_pixels`]
 //! draws the same chart as a picture for glow, with the names as text
-//! showing through holes in it. [`pick`] runs an interactive braille one
-//! that owns the keyboard and hands back the star the user chose.
+//! showing through holes in it. [`pick`] runs an interactive one, pixels
+//! or braille the same way, that owns the keyboard and hands back the star
+//! the user chose.
 //!
 //! Star colours are the colour of a black body at the star's temperature,
 //! from its B−V index (Flower 1996 as corrected by Torres 2010, Ballesteros

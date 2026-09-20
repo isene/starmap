@@ -1,7 +1,7 @@
 //! The interactive sky: walk a crosshair over it and choose a star.
 
 use crate::proj::{Projection, View};
-use crate::render::{plot, Body, Opts};
+use crate::render::{picture, plot, Body, Opts};
 use crate::{stars, Star};
 use crust::style;
 use crust::{Crust, Cursor, Input};
@@ -22,46 +22,80 @@ pub struct Picked {
 /// figures and the names, Enter takes the star under the crosshair.
 ///
 /// The caller owns the screen afterwards: this leaves the terminal as it
-/// found it but does not redraw whatever was there before.
+/// found it but does not redraw whatever was there before. Where the
+/// terminal shows images the sky is real pixels, with the crosshair drawn
+/// into the picture; elsewhere braille.
 pub fn pick(start: View, mut opts: Opts, title: &str) -> Option<Picked> {
     let mut view = start;
-    // Dot coordinates of the crosshair, from the top left of the chart.
+    let mut display = glow::Display::new();
+    let pixels = display.supported();
+    let cell = glow::get_cell_size();
+    // Pixels per braille dot: the crosshair's steps and reach are set in dots.
+    let dot = if pixels { (cell.0 as f64 / 2.0 + cell.1 as f64 / 4.0) / 2.0 } else { 1.0 };
+    // Where the crosshair is, from the top left of the chart, in dots or pixels.
     let mut cross: Option<(i32, i32)> = None;
 
-    loop {
+    let result = loop {
         let (cols, rows) = Crust::terminal_size();
         let (w, h) = (cols, rows.saturating_sub(2));
-        let (dw, dh) = (w as i32 * 2, h as i32 * 4);
+        let (dw, dh) = if pixels {
+            (w as i32 * cell.0.max(1) as i32, h as i32 * cell.1.max(1) as i32)
+        } else {
+            (w as i32 * 2, h as i32 * 4)
+        };
+        let edge = 2.0 * dot;
+        let step = (4.0 * dot).round() as i32;
         let cur = *cross.get_or_insert((dw / 2, dh / 2));
-
-        let p = plot(&view, &opts, &[] as &[Body], 1, 2, w, h);
-        // The star nearest the crosshair, within a few dots.
-        let target = p
-            .placed
-            .iter()
-            .map(|&(i, x, y)| {
-                let (dx, dy) = ((x - cur.0) as f64, (y - cur.1) as f64);
-                (i, dx * dx + dy * dy)
-            })
-            .filter(|&(_, d2)| d2 <= 64.0)
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(i, _)| i);
+        let nearest = |placed: &[(usize, i32, i32)]| {
+            placed
+                .iter()
+                .map(|&(i, x, y)| {
+                    let (dx, dy) = ((x - cur.0) as f64, (y - cur.1) as f64);
+                    (i, dx * dx + dy * dy)
+                })
+                .filter(|&(_, d2)| d2 <= (8.0 * dot).powi(2))
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(i, _)| i)
+        };
 
         Crust::clear_screen();
-        print!("{}", p.frame);
-
-        // The crosshair, or the star it has hold of. Marking the star's
-        // own cell rather than bracketing it keeps the mark off its
-        // neighbours' name labels, which are only two columns away.
-        let (mark, at) = match target.and_then(|i| p.placed.iter().find(|&&(j, _, _)| j == i)) {
-            Some(&(_, x, y)) => ("*", (1 + x as u16 / 2, 2 + y as u16 / 4)),
-            None => ("+", (1 + cur.0 as u16 / 2, 2 + cur.1 as u16 / 4)),
+        display.clear_all();
+        let yellow = (255, 220, 120);
+        let (target, mag_shown) = if pixels {
+            let mut p = picture(&view, &opts, &[] as &[Body], 1, 2, w, h, cell);
+            let target = nearest(&p.placed);
+            // A ring round the star it has hold of, else the cross itself.
+            match target.and_then(|i| p.placed.iter().find(|&&(j, _, _)| j == i)) {
+                Some(&(_, x, y)) => {
+                    let (x, y) = (x as f64 + 0.5, y as f64 + 0.5);
+                    p.canvas.ring(x, y, 3.0 * dot, yellow, 1.0);
+                    p.canvas.ring(x, y, 3.0 * dot + 1.0, yellow, 1.0);
+                }
+                None => {
+                    let (x, y) = (cur.0 as f64 + 0.5, cur.1 as f64 + 0.5);
+                    let arm = 3.0 * dot;
+                    p.canvas.line((x - arm, y), (x + arm, y), 1.5, yellow, 1.0);
+                    p.canvas.line((x, y - arm), (x, y + arm), 1.5, yellow, 1.0);
+                }
+            }
+            p.canvas.settle_alpha();
+            print!("{}", p.text);
+            display.show_canvas(&p.canvas, 1, 2);
+            (target, p.mag_shown)
+        } else {
+            let p = plot(&view, &opts, &[] as &[Body], 1, 2, w, h);
+            let target = nearest(&p.placed);
+            print!("{}", p.frame);
+            // The crosshair, or the star it has hold of. Marking the star's
+            // own cell rather than bracketing it keeps the mark off its
+            // neighbours' name labels, which are only two columns away.
+            let (mark, at) = match target.and_then(|i| p.placed.iter().find(|&&(j, _, _)| j == i)) {
+                Some(&(_, x, y)) => ("*", (1 + x as u16 / 2, 2 + y as u16 / 4)),
+                None => ("+", (1 + cur.0 as u16 / 2, 2 + cur.1 as u16 / 4)),
+            };
+            print!("{}{}", Cursor::at(at.0, at.1), style::rgb(mark, Some(yellow), None, "b"));
+            (target, p.mag_shown)
         };
-        print!(
-            "{}{}",
-            Cursor::at(at.0, at.1),
-            style::rgb(mark, Some((255, 220, 120)), None, "b")
-        );
 
         // Title row and the star under the crosshair.
         let where_ = match view.proj {
@@ -72,7 +106,7 @@ pub fn pick(start: View, mut opts: Opts, title: &str) -> Option<Picked> {
         };
         let head = format!(
             " {}  ·  {}  ·  ×{:.0} zoom · stars to mag {:.1} ",
-            title, where_, view.zoom, p.mag_shown
+            title, where_, view.zoom, mag_shown
         );
         print!(
             "{}{}",
@@ -105,12 +139,11 @@ pub fn pick(start: View, mut opts: Opts, title: &str) -> Option<Picked> {
         let Some(key) = Input::getchr(None) else { continue };
         // Moving: the crosshair walks until it reaches the edge, then the
         // sky slides under it instead.
-        let step = 4;
         let walk = |dx: i32, dy: i32, cross: &mut Option<(i32, i32)>, view: &mut View| {
             let (mut x, mut y) = cross.unwrap();
             x += dx * step;
             y += dy * step;
-            let r = (dw.min(dh) as f64 / 2.0) - 2.0;
+            let r = (dw.min(dh) as f64 / 2.0) - edge;
             if x < 0 || x >= dw {
                 x -= dx * step;
                 view.pan.0 += dx as f64 * step as f64 / r / view.zoom;
@@ -123,18 +156,18 @@ pub fn pick(start: View, mut opts: Opts, title: &str) -> Option<Picked> {
         };
 
         match key.as_str() {
-            "q" | "Q" | "ESC" => return None,
+            "q" | "Q" | "ESC" => break None,
             "ENTER" | " " => {
                 if let Some(i) = target {
-                    return Some(Picked { star: &stars()[i], index: i });
+                    break Some(Picked { star: &stars()[i], index: i });
                 }
             }
             "RIGHT" | "l" => walk(1, 0, &mut cross, &mut view),
             "LEFT" | "h" => walk(-1, 0, &mut cross, &mut view),
             "DOWN" | "j" => walk(0, 1, &mut cross, &mut view),
             "UP" | "k" => walk(0, -1, &mut cross, &mut view),
-            "+" | "=" | "PgUP" => zoom_about(&mut view, cur, (dw, dh), 1.5),
-            "-" | "_" | "PgDOWN" => zoom_about(&mut view, cur, (dw, dh), 1.0 / 1.5),
+            "+" | "=" | "PgUP" => zoom_about(&mut view, cur, (dw, dh), edge, 1.5),
+            "-" | "_" | "PgDOWN" => zoom_about(&mut view, cur, (dw, dh), edge, 1.0 / 1.5),
             "f" | "F" => {
                 if let Projection::Hemisphere { north } = view.proj {
                     view.proj = Projection::Hemisphere { north: !north };
@@ -152,13 +185,17 @@ pub fn pick(start: View, mut opts: Opts, title: &str) -> Option<Picked> {
             "RESIZE" => cross = None,
             _ => {}
         }
-    }
+    };
+    // The picture would sit over whatever the caller draws next.
+    display.clear_all();
+    result
 }
 
 /// Zoom in or out while keeping the sky under the crosshair still.
-fn zoom_about(view: &mut View, cross: (i32, i32), dots: (i32, i32), by: f64) {
+/// `edge` is the margin the chart keeps to the frame, in the grid's units.
+fn zoom_about(view: &mut View, cross: (i32, i32), dots: (i32, i32), edge: f64, by: f64) {
     let (dw, dh) = (dots.0 as f64, dots.1 as f64);
-    let r = (dw.min(dh) / 2.0) - 2.0;
+    let r = (dw.min(dh) / 2.0) - edge;
     let off = (
         (cross.0 as f64 - dw / 2.0) / r,
         (cross.1 as f64 - dh / 2.0) / r,
