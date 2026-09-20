@@ -346,7 +346,7 @@ pub fn picture(view: &View, opts: &Opts, bodies: &[Body], x: u16, y: u16, w: u16
             taken.push((row, col, col + 1));
             c.hole((row - y) as usize, (col - x) as usize, 1);
             text.push_str(&Cursor::at(col, row));
-            text.push_str(&style::rgb(label, Some((255, 190, 90)), None, "b"));
+            text.push_str(&style::rgb(label, Some((255, 190, 90)), Some((0, 0, 0)), "b"));
         }
     }
     for (col, row, label, rgb) in body_labels.into_iter().chain(star_labels) {
@@ -357,8 +357,9 @@ pub fn picture(view: &View, opts: &Opts, bodies: &[Body], x: u16, y: u16, w: u16
         }
         taken.push((row, col, end));
         c.hole((row - y) as usize, (col - x) as usize, n as usize);
+        // On black, whatever the pane behind the picture is painted.
         text.push_str(&Cursor::at(col, row));
-        text.push_str(&style::rgb(&label, Some(rgb), None, ""));
+        text.push_str(&style::rgb(&label, Some(rgb), Some((0, 0, 0)), ""));
     }
 
     Picture { text, canvas: c, placed, mag_shown }
