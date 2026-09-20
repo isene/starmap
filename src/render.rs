@@ -253,11 +253,15 @@ pub fn picture(view: &View, opts: &Opts, bodies: &[Body], x: u16, y: u16, w: u16
     let r = pw.min(ph) / 2.0 - 2.0 * dot;
 
     // How faint this much room can take, as for braille, with pixels
-    // letting stars sit about twice as close as dots do.
-    let dots = std::f64::consts::PI * r * r / (dot * dot) * 4.0;
+    // letting about twice as many stars in as dots do. A small block
+    // shows the constellation stars; a full screen gets the whole sky.
+    let dots = std::f64::consts::PI * r * r / (dot * dot) * 2.0;
     let fits = ((2.0 * 0.10 * dots * view.zoom * view.zoom).log10() - 0.68) / 0.5;
     let mag_shown = opts.mag.min(fits).max(1.0);
 
+    // Star sizes follow the chart's radius: a small block gets small
+    // stars, a full screen fuller ones.
+    let unit = dot * (r / (60.0 * dot)).clamp(0.5, 1.2);
     let to_px = |u: (f64, f64)| (cx + u.0 * r, cy + u.1 * r);
     let in_frame = |p: (f64, f64)| p.0 >= -dot && p.1 >= -dot && p.0 < pw + dot && p.1 < ph + dot;
 
@@ -304,7 +308,7 @@ pub fn picture(view: &View, opts: &Opts, bodies: &[Body], x: u16, y: u16, w: u16
         let rgb = teff_rgb(star_teff(s));
         let fade = (1.0 - 0.10 * (s.mag - mag_shown + 3.0).max(0.0)).clamp(0.5, 1.0);
         let rgb = ((rgb.0 as f64 * fade) as u8, (rgb.1 as f64 * fade) as u8, (rgb.2 as f64 * fade) as u8);
-        let radius = (dot * (0.28 + 0.15 * (mag_shown - s.mag))).min(dot * 1.9);
+        let radius = (unit * (0.20 + 0.12 * (mag_shown - s.mag))).min(unit * 1.6);
         blob(&mut c, p, radius, rgb, s.mag < 1.0);
         placed.push((i, p.0 as i32, p.1 as i32));
         let earns = s.mag < 1.8 + (view.zoom.log2() * 1.2).max(0.0);
@@ -323,7 +327,7 @@ pub fn picture(view: &View, opts: &Opts, bodies: &[Body], x: u16, y: u16, w: u16
         if !in_frame(p) {
             continue;
         }
-        blob(&mut c, p, dot * (0.6 + 0.5 * b.size.max(0) as f64), b.rgb, b.size >= 2);
+        blob(&mut c, p, unit * (0.5 + 0.4 * b.size.max(0) as f64), b.rgb, b.size >= 2);
         let (col, row) = (x + (p.0 / cell_w) as u16 + 2, y + (p.1 / cell_h) as u16);
         if col + b.name.len() as u16 + 1 < x + w {
             body_labels.push((col, row, b.name.clone(), b.rgb));
