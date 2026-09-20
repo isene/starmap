@@ -1,6 +1,6 @@
 [package]
 name = "fe2o3-starmap"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 authors = ["Geir Isene <g@isene.com>"]
 description = "The naked-eye sky in braille: 9,096 stars with distances, constellation figures, planisphere and hemisphere projections, and an interactive star picker."
@@ -16,7 +16,7 @@ name = "starmap"
 
 [dependencies]
 crust = { version = "0.1.46", path = "../crust", package = "fe2o3-crust" }
-glow = { version = "0.1.31", path = "../glow", package = "fe2o3-glow" }
+glow = { version = "0.1.32", path = "../glow", package = "fe2o3-glow" }
 
 [profile.release]
 opt-level = 3

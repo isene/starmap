@@ -238,19 +238,26 @@ pub struct Picture {
 /// cells at the terminal's cell size. Print the text, then show the canvas
 /// at (`x`, `y`).
 pub fn panel_pixels(view: &View, opts: &Opts, bodies: &[Body], x: u16, y: u16, w: u16, h: u16) -> Picture {
-    picture(view, opts, bodies, x, y, w, h, glow::get_cell_size())
+    picture(view, opts, bodies, x, y, w, h, None)
 }
 
 /// The same for a given cell size.
-pub fn picture(view: &View, opts: &Opts, bodies: &[Body], x: u16, y: u16, w: u16, h: u16, cell: (u16, u16)) -> Picture {
+pub fn picture(view: &View, opts: &Opts, bodies: &[Body], x: u16, y: u16, w: u16, h: u16, cell: Option<(u16, u16)>) -> Picture {
     let (cw, ch) = (w.max(10), h.max(3));
-    let mut c = glow::Canvas::with_cell(cw, ch, cell);
-    let (cell_w, cell_h) = (c.cell.0 as f64, c.cell.1 as f64);
+    let mut c = glow::Canvas::sized(cw, ch, cell);
+    let (cell_w, cell_h) = (c.cell_w(), c.cell_h());
     // Pixels per braille dot: the unit the braille chart's sizes are in.
     let dot = (cell_w / 2.0 + cell_h / 4.0) / 2.0;
     let (pw, ph) = (c.w as f64, c.h as f64);
     let (cx, cy) = (pw / 2.0, ph / 2.0);
-    let r = pw.min(ph) / 2.0 - 2.0 * dot;
+    // The horizon keeps a tenth of the height clear around it, for the
+    // cardinal points and the names at the edge. A hemisphere map shows
+    // the sky a quarter past its equator too, out to a clean circle, so
+    // its rim sits further in.
+    let map = matches!(view.proj, Projection::Hemisphere { .. });
+    let r = pw.min(ph) * if map { 0.35 } else { 0.45 } - 2.0 * dot;
+    let (ox, oy) = (cx - view.pan.0 * r * view.zoom, cy - view.pan.1 * r * view.zoom);
+    let clip = if map { 1.25 * r * view.zoom } else { f64::INFINITY };
 
     // How faint this much room can take, as for braille, with pixels
     // letting about twice as many stars in as dots do. A small block
@@ -263,11 +270,13 @@ pub fn picture(view: &View, opts: &Opts, bodies: &[Body], x: u16, y: u16, w: u16
     // stars, a full screen fuller ones.
     let unit = dot * (r / (60.0 * dot)).clamp(0.5, 1.2);
     let to_px = |u: (f64, f64)| (cx + u.0 * r, cy + u.1 * r);
-    let in_frame = |p: (f64, f64)| p.0 >= -dot && p.1 >= -dot && p.0 < pw + dot && p.1 < ph + dot;
+    let in_frame = |p: (f64, f64)| {
+        p.0 >= -dot && p.1 >= -dot && p.0 < pw + dot && p.1 < ph + dot
+            && ((p.0 - ox).powi(2) + (p.1 - oy).powi(2)).sqrt() <= clip
+    };
 
     if opts.rim {
         let rr = r * view.zoom;
-        let (ox, oy) = (cx - view.pan.0 * r * view.zoom, cy - view.pan.1 * r * view.zoom);
         if rr < pw * 4.0 {
             ring(&mut c, ox, oy, rr, dot * 0.4, (70, 70, 85));
         }
@@ -282,7 +291,7 @@ pub fn picture(view: &View, opts: &Opts, bodies: &[Body], x: u16, y: u16, w: u16
                 if !in_frame(p) && !in_frame(q) {
                     continue;
                 }
-                stroke(&mut c, p, q, dot * 0.35, ink);
+                c.line(p, q, dot * 0.35, ink, 1.0);
             }
         }
     }
@@ -407,21 +416,6 @@ fn blob(c: &mut glow::Canvas, p: (f64, f64), r: f64, rgb: (u8, u8, u8), bright: 
     }
 }
 
-/// A line of `thick` pixels from `a` to `b`.
-fn stroke(c: &mut glow::Canvas, a: (f64, f64), b: (f64, f64), thick: f64, rgb: (u8, u8, u8)) {
-    let n = ((b.0 - a.0).abs().max((b.1 - a.1).abs()) * 1.5).ceil().max(1.0) as usize;
-    let r = (thick / 2.0).max(0.5);
-    for i in 0..=n {
-        let f = i as f64 / n as f64;
-        let (x, y) = (a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f);
-        if r <= 0.6 {
-            lift(c, x as i64, y as i64, rgb, 1.0);
-        } else {
-            blob(c, (x, y), r, rgb, false);
-        }
-    }
-}
-
 /// A circle of radius `r` about (`cx`, `cy`), `thick` pixels wide.
 fn ring(c: &mut glow::Canvas, cx: f64, cy: f64, r: f64, thick: f64, rgb: (u8, u8, u8)) {
     let steps = ((r * 3.0) as usize).clamp(360, 12000);
@@ -465,7 +459,7 @@ mod tests {
     #[test]
     fn the_picture_places_stars_and_cuts_holes_for_their_names() {
         let v = View::new(Projection::Hemisphere { north: true });
-        let p = picture(&v, &Opts::default(), &[], 1, 2, 100, 30, (10, 20));
+        let p = picture(&v, &Opts::default(), &[], 1, 2, 100, 30, Some((10, 20)));
         assert_eq!((p.canvas.w, p.canvas.h), (1000, 600));
         assert!(p.placed.len() > 500, "only {} stars", p.placed.len());
         assert!(p.text.contains("Vega") && p.text.contains("Arcturus"), "the bright stars are named: {}", p.text.replace('\x1b', "^"));
@@ -485,7 +479,7 @@ mod tests {
         let o = Opts::default();
         let t = std::time::Instant::now();
         for _ in 0..3 {
-            let _ = picture(&v, &o, &[], 1, 2, 190, 50, (10, 20));
+            let _ = picture(&v, &o, &[], 1, 2, 190, 50, Some((10, 20)));
         }
         let per = t.elapsed() / 3;
         assert!(per.as_millis() < 400, "one picture took {per:?}");
@@ -493,7 +487,7 @@ mod tests {
         // STARMAP_DUMP=/some/file.png writes the picture out for a look.
         if let Ok(path) = std::env::var("STARMAP_DUMP") {
             let v = View::new(Projection::Horizon { lst_deg: 40.0, lat_deg: 59.9 });
-            let _ = std::fs::write(path, picture(&v, &o, &[], 1, 2, 190, 50, (10, 20)).canvas.png());
+            let _ = std::fs::write(path, picture(&v, &o, &[], 1, 2, 190, 50, Some((10, 20))).canvas.png());
         }
     }
 

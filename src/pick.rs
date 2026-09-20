@@ -29,9 +29,6 @@ pub fn pick(start: View, mut opts: Opts, title: &str) -> Option<Picked> {
     let mut view = start;
     let mut display = glow::Display::new();
     let pixels = display.supported();
-    let cell = glow::get_cell_size();
-    // Pixels per braille dot: the crosshair's steps and reach are set in dots.
-    let dot = if pixels { (cell.0 as f64 / 2.0 + cell.1 as f64 / 4.0) / 2.0 } else { 1.0 };
     // Where the crosshair is, from the top left of the chart, in dots or pixels.
     let mut cross: Option<(i32, i32)> = None;
 
@@ -39,10 +36,13 @@ pub fn pick(start: View, mut opts: Opts, title: &str) -> Option<Picked> {
         let (cols, rows) = Crust::terminal_size();
         let (w, h) = (cols, rows.saturating_sub(2));
         let (dw, dh) = if pixels {
-            (w as i32 * cell.0.max(1) as i32, h as i32 * cell.1.max(1) as i32)
+            let (bw, bh) = glow::cell_box(w, h);
+            (bw as i32, bh as i32)
         } else {
             (w as i32 * 2, h as i32 * 4)
         };
+        // Pixels per braille dot: the crosshair's steps and reach are set in dots.
+        let dot = if pixels { (dw as f64 / w as f64 / 2.0 + dh as f64 / h as f64 / 4.0) / 2.0 } else { 1.0 };
         let edge = 2.0 * dot;
         let step = (4.0 * dot).round() as i32;
         let cur = *cross.get_or_insert((dw / 2, dh / 2));
@@ -62,7 +62,7 @@ pub fn pick(start: View, mut opts: Opts, title: &str) -> Option<Picked> {
         display.clear_all();
         let yellow = (255, 220, 120);
         let (target, mag_shown) = if pixels {
-            let mut p = picture(&view, &opts, &[] as &[Body], 1, 2, w, h, cell);
+            let mut p = picture(&view, &opts, &[] as &[Body], 1, 2, w, h, None);
             let target = nearest(&p.placed);
             // A ring round the star it has hold of, else the cross itself.
             match target.and_then(|i| p.placed.iter().find(|&&(j, _, _)| j == i)) {
@@ -78,7 +78,6 @@ pub fn pick(start: View, mut opts: Opts, title: &str) -> Option<Picked> {
                     p.canvas.line((x, y - arm), (x, y + arm), 1.5, yellow, 1.0);
                 }
             }
-            p.canvas.settle_alpha();
             print!("{}", p.text);
             display.show_canvas(&p.canvas, 1, 2);
             (target, p.mag_shown)
