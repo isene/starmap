@@ -60,19 +60,34 @@ fn dso_rgb(k: DsoKind) -> (u8, u8, u8) {
 /// object's tilt, so the chart's own bending applies to it as to the stars.
 fn dso_outline(view: &View, d: &Dso, steps: usize) -> Option<((f64, f64), Vec<Option<(f64, f64)>>)> {
     let centre = view.screen(d.ra, d.dec)?;
-    let (a, b) = (d.major / 120.0, d.minor / 120.0);
-    let pa = d.pa.to_radians();
-    let cos_dec = d.dec.to_radians().cos().max(0.05);
-    let pts = (0..=steps)
+    Some((centre, sky_ellipse(view, d.ra, d.dec, d.major / 120.0, d.minor / 120.0, d.pa, steps)))
+}
+
+/// An ellipse on the sky about (`ra`, `dec`), semi-axes `a` and `b` in
+/// degrees, long axis tilted `pa` degrees from north through east, as
+/// `steps` + 1 unit-disc screen points; `None` for any point out of view.
+fn sky_ellipse(view: &View, ra: f64, dec: f64, a: f64, b: f64, pa: f64, steps: usize) -> Vec<Option<(f64, f64)>> {
+    let pa = pa.to_radians();
+    let cos_dec = dec.to_radians().cos().max(0.05);
+    (0..=steps)
         .map(|i| {
             let t = i as f64 * std::f64::consts::TAU / steps as f64;
             let (u, v) = (a * t.cos(), b * t.sin());
             let east = u * pa.sin() + v * pa.cos();
             let north = u * pa.cos() - v * pa.sin();
-            view.screen(d.ra + east / cos_dec, d.dec + north)
+            view.screen(ra + east / cos_dec, dec + north)
         })
-        .collect();
-    Some((centre, pts))
+        .collect()
+}
+
+/// Something drawn over the chart at a place on the sky: a circle of
+/// `radius_deg` (an eyepiece's field, say), or with radius 0 a crosshair.
+#[derive(Clone, Debug)]
+pub struct Mark {
+    pub ra: f64,
+    pub dec: f64,
+    pub radius_deg: f64,
+    pub rgb: (u8, u8, u8),
 }
 
 /// What to write beside an object, if it earns a label at this zoom: the
@@ -120,13 +135,21 @@ pub fn panel(
     w: u16,
     h: u16,
 ) -> String {
-    plot(view, opts, bodies, x, y, w, h).frame
+    plot(view, opts, bodies, &[], x, y, w, h).frame
 }
 
+/// `panel` with marks drawn over the chart.
+#[allow(clippy::too_many_arguments)]
+pub fn panel_marked(view: &View, opts: &Opts, bodies: &[Body], marks: &[Mark], x: u16, y: u16, w: u16, h: u16) -> String {
+    plot(view, opts, bodies, marks, x, y, w, h).frame
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn plot(
     view: &View,
     opts: &Opts,
     bodies: &[Body],
+    marks: &[Mark],
     x: u16,
     y: u16,
     w: u16,
@@ -272,6 +295,25 @@ pub(crate) fn plot(
         }
     }
 
+    // Marks on top of everything.
+    for m in marks {
+        let Some(cu) = view.screen(m.ra, m.dec) else { continue };
+        let c = to_dot(cu);
+        if m.radius_deg <= 0.0 {
+            for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                canvas.line(c.0 + 2 * dx, c.1 + 2 * dy, c.0 + 5 * dx, c.1 + 5 * dy, m.rgb, 100.0);
+            }
+            continue;
+        }
+        let dots: Vec<Option<(i32, i32)>> =
+            sky_ellipse(view, m.ra, m.dec, m.radius_deg, m.radius_deg, 0.0, 64).iter().map(|u| u.map(to_dot)).collect();
+        for pair in dots.windows(2) {
+            if let (Some(p), Some(q)) = (pair[0], pair[1]) {
+                canvas.line(p.0, p.1, q.0, q.1, m.rgb, 100.0);
+            }
+        }
+    }
+
     // Place labels, bodies first: two names on one patch of sky print
     // over each other, and "jupiterollux" is worse than no Pollux.
     let mut taken: Vec<(u16, u16, u16)> = Vec::new();
@@ -333,11 +375,18 @@ pub struct Picture {
 /// cells at the terminal's cell size. Print the text, then show the canvas
 /// at (`x`, `y`).
 pub fn panel_pixels(view: &View, opts: &Opts, bodies: &[Body], x: u16, y: u16, w: u16, h: u16) -> Picture {
-    picture(view, opts, bodies, x, y, w, h, None)
+    picture(view, opts, bodies, &[], x, y, w, h, None)
+}
+
+/// `panel_pixels` with marks drawn over the chart.
+#[allow(clippy::too_many_arguments)]
+pub fn panel_pixels_marked(view: &View, opts: &Opts, bodies: &[Body], marks: &[Mark], x: u16, y: u16, w: u16, h: u16) -> Picture {
+    picture(view, opts, bodies, marks, x, y, w, h, None)
 }
 
 /// The same for a given cell size.
-pub fn picture(view: &View, opts: &Opts, bodies: &[Body], x: u16, y: u16, w: u16, h: u16, cell: Option<(u16, u16)>) -> Picture {
+#[allow(clippy::too_many_arguments)]
+pub fn picture(view: &View, opts: &Opts, bodies: &[Body], marks: &[Mark], x: u16, y: u16, w: u16, h: u16, cell: Option<(u16, u16)>) -> Picture {
     let (cw, ch) = (w.max(10), h.max(3));
     let mut c = glow::Canvas::sized(cw, ch, cell);
     let (cell_w, cell_h) = (c.cell_w(), c.cell_h());
@@ -480,6 +529,25 @@ pub fn picture(view: &View, opts: &Opts, bodies: &[Body], x: u16, y: u16, w: u16
         }
     }
 
+    for m in marks {
+        let Some(cu) = view.screen(m.ra, m.dec) else { continue };
+        let cp = to_px(cu);
+        if m.radius_deg <= 0.0 {
+            let (gap, len) = (unit * 1.4, unit * 4.0);
+            for (dx, dy) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+                c.line((cp.0 + gap * dx, cp.1 + gap * dy), (cp.0 + len * dx, cp.1 + len * dy), dot * 0.4, m.rgb, 1.0);
+            }
+            continue;
+        }
+        let px: Vec<Option<(f64, f64)>> =
+            sky_ellipse(view, m.ra, m.dec, m.radius_deg, m.radius_deg, 0.0, 96).iter().map(|u| u.map(to_px)).collect();
+        for pair in px.windows(2) {
+            if let (Some(p), Some(q)) = (pair[0], pair[1]) {
+                c.line(p, q, dot * 0.45, m.rgb, 1.0);
+            }
+        }
+    }
+
     let mut taken: Vec<(u16, u16, u16)> = Vec::new();
     let mut text = String::new();
     if let Projection::Horizon { .. } = view.proj {
@@ -575,7 +643,7 @@ mod tests {
     #[test]
     fn draws_something_and_places_stars() {
         let v = View::new(Projection::Hemisphere { north: true });
-        let p = plot(&v, &Opts::default(), &[], 1, 1, 100, 30);
+        let p = plot(&v, &Opts::default(), &[], &[], 1, 1, 100, 30);
         assert!(!p.placed.is_empty(), "no stars placed");
         assert!(p.frame.contains('\u{2800}') || p.frame.chars().any(|c| c >= '\u{2801}' && c <= '\u{28ff}'));
         // Polaris is on the northern map, Canopus is not.
@@ -587,16 +655,16 @@ mod tests {
     #[test]
     fn zoom_shows_fainter_stars() {
         let mut v = View::new(Projection::Hemisphere { north: true });
-        let wide = plot(&v, &Opts::default(), &[], 1, 1, 100, 30).mag_shown;
+        let wide = plot(&v, &Opts::default(), &[], &[], 1, 1, 100, 30).mag_shown;
         v.zoom = 8.0;
-        let close = plot(&v, &Opts::default(), &[], 1, 1, 100, 30).mag_shown;
+        let close = plot(&v, &Opts::default(), &[], &[], 1, 1, 100, 30).mag_shown;
         assert!(close > wide, "zoomed in should reach fainter: {wide} -> {close}");
     }
 
     #[test]
     fn the_picture_places_stars_and_cuts_holes_for_their_names() {
         let v = View::new(Projection::Hemisphere { north: true });
-        let p = picture(&v, &Opts::default(), &[], 1, 2, 100, 30, Some((10, 20)));
+        let p = picture(&v, &Opts::default(), &[], &[], 1, 2, 100, 30, Some((10, 20)));
         assert_eq!((p.canvas.w, p.canvas.h), (1000, 600));
         assert!(p.placed.len() > 500, "only {} stars", p.placed.len());
         assert!(p.text.contains("Vega") && p.text.contains("Arcturus"), "the bright stars are named: {}", p.text.replace('\x1b', "^"));
@@ -616,7 +684,7 @@ mod tests {
         let o = Opts::default();
         let t = std::time::Instant::now();
         for _ in 0..3 {
-            let _ = picture(&v, &o, &[], 1, 2, 190, 50, Some((10, 20)));
+            let _ = picture(&v, &o, &[], &[], 1, 2, 190, 50, Some((10, 20)));
         }
         let per = t.elapsed() / 3;
         assert!(per.as_millis() < 400, "one picture took {per:?}");
@@ -624,7 +692,7 @@ mod tests {
         // STARMAP_DUMP=/some/file.png writes the picture out for a look.
         if let Ok(path) = std::env::var("STARMAP_DUMP") {
             let v = View::new(Projection::Horizon { lst_deg: 40.0, lat_deg: 59.9 });
-            let _ = std::fs::write(path, picture(&v, &o, &[], 1, 2, 190, 50, Some((10, 20))).canvas.png());
+            let _ = std::fs::write(path, picture(&v, &o, &[], &[], 1, 2, 190, 50, Some((10, 20))).canvas.png());
         }
     }
 
@@ -634,13 +702,13 @@ mod tests {
         let m31 = dsos().iter().find(|d| d.id == "M31").unwrap();
         assert_eq!((m31.alt, m31.kind, m31.constellation), ("NGC 224", DsoKind::Galaxy, "And"));
         let v = View::new(Projection::Hemisphere { north: true });
-        let off = plot(&v, &Opts::default(), &[], 1, 1, 150, 42);
+        let off = plot(&v, &Opts::default(), &[], &[], 1, 1, 150, 42);
         assert!(off.dso_placed.is_empty());
-        let on = plot(&v, &Opts { dso: true, ..Opts::default() }, &[], 1, 1, 150, 42);
+        let on = plot(&v, &Opts { dso: true, ..Opts::default() }, &[], &[], 1, 1, 150, 42);
         let ids: Vec<&str> = on.dso_placed.iter().map(|&(i, _, _)| dsos()[i].id).collect();
         assert!(ids.contains(&"M31") && ids.contains(&"M13"), "northern objects missing");
         assert!(!ids.contains(&"C99"), "the Coalsack is a southern object");
-        let pic = picture(&v, &Opts { dso: true, ..Opts::default() }, &[], 1, 2, 150, 42, Some((10, 20)));
+        let pic = picture(&v, &Opts { dso: true, ..Opts::default() }, &[], &[], 1, 2, 150, 42, Some((10, 20)));
         assert!(pic.dso_placed.len() > 100, "{} objects in the picture", pic.dso_placed.len());
         assert!(pic.text.contains("M31"), "the brightest objects are labelled");
     }
@@ -652,12 +720,12 @@ mod tests {
         let Ok(dir) = std::env::var("STARMAP_DSO_DUMP") else { return };
         let o = Opts { dso: true, ..Opts::default() };
         let mut v = View::new(Projection::Hemisphere { north: true });
-        let _ = std::fs::write(format!("{dir}/north.png"), picture(&v, &o, &[], 1, 2, 190, 50, Some((10, 20))).canvas.png());
+        let _ = std::fs::write(format!("{dir}/north.png"), picture(&v, &o, &[], &[], 1, 2, 190, 50, Some((10, 20))).canvas.png());
         for (name, ra, dec, zoom) in [("orion", 83.8, -5.4, 18.0), ("andromeda", 10.7, 41.3, 14.0)] {
             v = View::new(Projection::Horizon { lst_deg: ra, lat_deg: 30.0 });
             v.pan = v.place(ra, dec).unwrap();
             v.zoom = zoom;
-            let p = picture(&v, &o, &[], 1, 2, 190, 50, Some((10, 20)));
+            let p = picture(&v, &o, &[], &[], 1, 2, 190, 50, Some((10, 20)));
             let _ = std::fs::write(format!("{dir}/{name}.png"), p.canvas.png());
             let _ = std::fs::write(format!("{dir}/{name}.txt"), crust::strip_ansi(&p.text));
         }
@@ -669,7 +737,7 @@ mod tests {
         let o = Opts::default();
         let t = std::time::Instant::now();
         for _ in 0..20 {
-            let _ = plot(&v, &o, &[], 1, 1, 150, 42);
+            let _ = plot(&v, &o, &[], &[], 1, 1, 150, 42);
         }
         let per = t.elapsed() / 20;
         assert!(per.as_millis() < 20, "one frame took {per:?}");

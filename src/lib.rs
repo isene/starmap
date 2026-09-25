@@ -40,7 +40,7 @@ mod render;
 pub use canvas::Canvas;
 pub use pick::{pick, Picked};
 pub use proj::{altaz, lst_deg, Projection, View};
-pub use render::{panel, panel_pixels, Body, Opts, Picture};
+pub use render::{panel, panel_marked, panel_pixels, panel_pixels_marked, Body, Mark, Opts, Picture};
 
 
 use std::sync::OnceLock;

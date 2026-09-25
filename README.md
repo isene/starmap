@@ -110,6 +110,14 @@ closer in, more are, and then with their common names.
 
 `starmap::dsos()` gives the list, for a caller that wants to look one up.
 
+## Marks
+
+`panel_marked` and `panel_pixels_marked` take a slice of `Mark` and draw
+each over the chart: a circle of `radius_deg` laid out on the sky, so it
+bends with the chart as the stars do, or with radius 0 a crosshair.
+astro draws eyepiece fields with them. `View::centre()` says which sky
+position sits in the middle of the screen.
+
 ## Cost
 
 A braille frame is arithmetic over the two tables and one canvas: about

@@ -61,7 +61,7 @@ pub fn pick(start: View, mut opts: Opts, title: &str) -> Option<Picked> {
         Crust::clear_screen();
         let yellow = (255, 220, 120);
         let (target, mag_shown) = if pixels {
-            let mut p = picture(&view, &opts, &[] as &[Body], 1, 2, w, h, None);
+            let mut p = picture(&view, &opts, &[] as &[Body], &[], 1, 2, w, h, None);
             let target = nearest(&p.placed);
             // A ring round the star it has hold of, else the cross itself.
             match target.and_then(|i| p.placed.iter().find(|&&(j, _, _)| j == i)) {
@@ -81,7 +81,7 @@ pub fn pick(start: View, mut opts: Opts, title: &str) -> Option<Picked> {
             display.swap_canvas(&p.canvas, 1, 2);
             (target, p.mag_shown)
         } else {
-            let p = plot(&view, &opts, &[] as &[Body], 1, 2, w, h);
+            let p = plot(&view, &opts, &[] as &[Body], &[], 1, 2, w, h);
             let target = nearest(&p.placed);
             print!("{}", p.frame);
             // The crosshair, or the star it has hold of. Marking the star's

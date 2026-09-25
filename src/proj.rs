@@ -92,6 +92,34 @@ impl View {
         }
     }
 
+    /// The sky position at a unit-disc point (before zoom and pan): the
+    /// reverse of `place`. Points past the rim still answer, as the sky
+    /// continued below the horizon or past the map's edge.
+    pub fn unplace(&self, u: (f64, f64)) -> (f64, f64) {
+        let r = u.0.hypot(u.1);
+        let a = (-u.0).atan2(-u.1);
+        match self.proj {
+            Projection::Horizon { lst_deg, lat_deg } => {
+                let (alt, az, lat) = ((90.0 - 90.0 * r).to_radians(), a, lat_deg.to_radians());
+                let sin_dec = alt.sin() * lat.sin() + alt.cos() * lat.cos() * az.cos();
+                let dec = sin_dec.clamp(-1.0, 1.0).asin();
+                let ha = (-az.sin() * alt.cos()).atan2(alt.sin() * lat.cos() - alt.cos() * lat.sin() * az.cos());
+                ((lst_deg - ha.to_degrees()).rem_euclid(360.0), dec.to_degrees())
+            }
+            Projection::Hemisphere { north } => {
+                let pole_dist = 90.0 * r;
+                let dec = if north { 90.0 - pole_dist } else { pole_dist - 90.0 };
+                let ra = a.to_degrees() * if north { 1.0 } else { -1.0 };
+                (ra.rem_euclid(360.0), dec)
+            }
+        }
+    }
+
+    /// The sky position in the middle of the screen, where a crosshair sits.
+    pub fn centre(&self) -> (f64, f64) {
+        self.unplace(self.pan)
+    }
+
     /// Unit-disc position after zoom and pan: what actually gets drawn.
     pub fn screen(&self, ra: f64, dec: f64) -> Option<(f64, f64)> {
         let (x, y) = self.place(ra, dec)?;
@@ -156,6 +184,22 @@ mod tests {
         v.pan = v.place(0.0, 0.0).unwrap();
         let centred = v.screen(0.0, 0.0).unwrap();
         assert!(centred.0.hypot(centred.1) < 1e-9, "panned-to point is centred");
+    }
+
+    #[test]
+    fn unplace_undoes_place() {
+        for v in [
+            View::new(Projection::Horizon { lst_deg: 123.0, lat_deg: 59.9 }),
+            View::new(Projection::Hemisphere { north: true }),
+            View::new(Projection::Hemisphere { north: false }),
+        ] {
+            for (ra, dec) in [(10.7, 41.3), (83.8, -5.4), (250.4, 36.5), (300.0, 70.0)] {
+                let Some(u) = v.place(ra, dec) else { continue };
+                let (r2, d2) = v.unplace(u);
+                let dra = ((r2 - ra + 540.0) % 360.0 - 180.0).abs();
+                assert!(dra < 1e-6 && (d2 - dec).abs() < 1e-6, "{ra},{dec} came back as {r2},{d2} in {:?}", v.proj);
+            }
+        }
     }
 
     #[test]
