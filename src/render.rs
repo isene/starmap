@@ -3,7 +3,7 @@
 
 use crate::canvas::Canvas;
 use crate::proj::{Projection, View};
-use crate::{figures, star_rgb, star_teff, stars, teff_rgb};
+use crate::{dsos, figures, star_rgb, star_teff, stars, teff_rgb, Dso, DsoKind};
 use crust::style;
 use crust::Cursor;
 
@@ -30,12 +30,60 @@ pub struct Opts {
     pub mag: f64,
     /// The horizon (or the celestial equator) as a circle.
     pub rim: bool,
+    /// The Messier and Caldwell objects, drawn at their size.
+    pub dso: bool,
 }
 
 impl Default for Opts {
     fn default() -> Self {
-        Self { figures: true, names: true, mag: 6.5, rim: true }
+        Self { figures: true, names: true, mag: 6.5, rim: true, dso: false }
     }
+}
+
+/// A deep-sky mark's colour, by kind.
+fn dso_rgb(k: DsoKind) -> (u8, u8, u8) {
+    match k {
+        DsoKind::Galaxy => (225, 150, 230),
+        DsoKind::OpenCluster => (235, 215, 120),
+        DsoKind::Globular => (245, 170, 95),
+        DsoKind::Planetary => (110, 225, 200),
+        DsoKind::Nebula | DsoKind::ClusterNebula => (120, 205, 140),
+        DsoKind::Supernova => (235, 110, 110),
+        DsoKind::Dark => (125, 125, 140),
+        DsoKind::StarGroup => (190, 190, 205),
+    }
+}
+
+/// An object's outline in unit-disc screen coordinates, `steps` points
+/// round it, with its centre; `None` when the centre is not in this sky.
+/// The ellipse is laid out on the sky first, its long axis turned to the
+/// object's tilt, so the chart's own bending applies to it as to the stars.
+fn dso_outline(view: &View, d: &Dso, steps: usize) -> Option<((f64, f64), Vec<Option<(f64, f64)>>)> {
+    let centre = view.screen(d.ra, d.dec)?;
+    let (a, b) = (d.major / 120.0, d.minor / 120.0);
+    let pa = d.pa.to_radians();
+    let cos_dec = d.dec.to_radians().cos().max(0.05);
+    let pts = (0..=steps)
+        .map(|i| {
+            let t = i as f64 * std::f64::consts::TAU / steps as f64;
+            let (u, v) = (a * t.cos(), b * t.sin());
+            let east = u * pa.sin() + v * pa.cos();
+            let north = u * pa.cos() - v * pa.sin();
+            view.screen(d.ra + east / cos_dec, d.dec + north)
+        })
+        .collect();
+    Some((centre, pts))
+}
+
+/// What to write beside an object, if it earns a label at this zoom: the
+/// brightest few on the whole sky, more as you close in, and the common
+/// name once you are close.
+fn dso_label(d: &Dso, zoom: f64) -> Option<String> {
+    let mag = d.mag.unwrap_or(9.0);
+    if mag > 4.5 + zoom.log2().max(0.0) * 2.5 {
+        return None;
+    }
+    Some(if zoom >= 4.0 && !d.name.is_empty() { d.label() } else { d.id.to_string() })
 }
 
 impl Opts {
@@ -57,6 +105,9 @@ pub(crate) struct Plot {
     pub placed: Vec<(usize, i32, i32)>,
     /// The magnitude limit this size and zoom could actually take.
     pub mag_shown: f64,
+    /// `(index into dsos(), dot x, dot y)` for every object drawn.
+    #[allow(dead_code)] // the picker hit-tests against it next
+    pub dso_placed: Vec<(usize, i32, i32)>,
 }
 
 /// Draw the sky into the rectangle at (`x`, `y`), `w`×`h` cells.
@@ -133,6 +184,48 @@ pub(crate) fn plot(
         }
     }
 
+    // Deep-sky objects under the stars, each at its own size, a small
+    // ring where it is too small to see. Open clusters dashed, globulars
+    // crossed, so the kinds tell apart without colour.
+    let mut dso_placed = Vec::new();
+    let mut dso_labels: Vec<(u16, u16, String, (u8, u8, u8))> = Vec::new();
+    if opts.dso {
+        for (i, d) in dsos().iter().enumerate() {
+            let Some((cu, pts)) = dso_outline(view, d, 32) else { continue };
+            let c = to_dot(cu);
+            if !in_frame(c) {
+                continue;
+            }
+            let rgb = dso_rgb(d.kind);
+            let dots: Vec<Option<(i32, i32)>> = pts.iter().map(|u| u.map(to_dot)).collect();
+            let reach = dots.iter().flatten().map(|p| (p.0 - c.0).abs().max((p.1 - c.1).abs())).max().unwrap_or(0);
+            if reach < 3 {
+                canvas.circle(c.0 as f64, c.1 as f64, 2.0, rgb, 0.5);
+            } else {
+                for (k, pair) in dots.windows(2).enumerate() {
+                    if d.kind == DsoKind::OpenCluster && k % 2 == 1 {
+                        continue;
+                    }
+                    if let (Some(p), Some(q)) = (pair[0], pair[1]) {
+                        canvas.line(p.0, p.1, q.0, q.1, rgb, 0.5);
+                    }
+                }
+            }
+            if d.kind == DsoKind::Globular {
+                let k = reach.clamp(2, 4);
+                canvas.line(c.0 - k, c.1, c.0 + k, c.1, rgb, 0.5);
+                canvas.line(c.0, c.1 - k, c.0, c.1 + k, rgb, 0.5);
+            }
+            dso_placed.push((i, c.0, c.1));
+            if let (true, Some(label)) = (opts.names && w >= 40 && h >= 10, dso_label(d, view.zoom)) {
+                let (col, row) = (x + (c.0 + reach) as u16 / 2 + 1, y + c.1 as u16 / 4);
+                if col + label.chars().count() as u16 + 1 < x + w {
+                    dso_labels.push((col, row, label, rgb));
+                }
+            }
+        }
+    }
+
     // Stars. The catalogue is brightest first, so the loop stops as soon
     // as it passes the limit.
     let mut placed = Vec::new();
@@ -183,7 +276,7 @@ pub(crate) fn plot(
     // over each other, and "jupiterollux" is worse than no Pollux.
     let mut taken: Vec<(u16, u16, u16)> = Vec::new();
     let mut labels: Vec<(u16, u16, String, (u8, u8, u8))> = Vec::new();
-    for (col, row, text, rgb) in body_labels.into_iter().chain(star_labels) {
+    for (col, row, text, rgb) in body_labels.into_iter().chain(dso_labels).chain(star_labels) {
         let end = col + text.chars().count() as u16;
         if taken.iter().any(|&(r, c0, c1)| r == row && col <= c1 && c0 <= end) {
             continue;
@@ -219,7 +312,7 @@ pub(crate) fn plot(
         frame.push_str(&style::rgb(&text, Some(rgb), None, ""));
     }
 
-    Plot { frame, placed, mag_shown }
+    Plot { frame, placed, mag_shown, dso_placed }
 }
 
 /// A chart drawn in real pixels: the text to print first (only the
@@ -232,6 +325,8 @@ pub struct Picture {
     /// `(index into stars(), pixel x, pixel y)` for every star drawn.
     pub placed: Vec<(usize, i32, i32)>,
     pub mag_shown: f64,
+    /// `(index into dsos(), pixel x, pixel y)` for every object drawn.
+    pub dso_placed: Vec<(usize, i32, i32)>,
 }
 
 /// Draw the sky as a picture for the rectangle at (`x`, `y`), `w`×`h`
@@ -292,6 +387,48 @@ pub fn picture(view: &View, opts: &Opts, bodies: &[Body], x: u16, y: u16, w: u16
                     continue;
                 }
                 c.line(p, q, dot * 0.35, ink, 1.0);
+            }
+        }
+    }
+
+    // Deep-sky objects, under the stars; the same marks as in braille.
+    let mut dso_placed = Vec::new();
+    let mut dso_labels: Vec<(u16, u16, String, (u8, u8, u8))> = Vec::new();
+    if opts.dso {
+        let thick = dot * 0.35;
+        for (i, d) in dsos().iter().enumerate() {
+            let Some((cu, pts)) = dso_outline(view, d, 48) else { continue };
+            let cp = to_px(cu);
+            if !in_frame(cp) {
+                continue;
+            }
+            let rgb = dso_rgb(d.kind);
+            let px: Vec<Option<(f64, f64)>> = pts.iter().map(|u| u.map(to_px)).collect();
+            let reach = px.iter().flatten().map(|p| (p.0 - cp.0).hypot(p.1 - cp.1)).fold(0.0, f64::max);
+            let least = unit * 1.3;
+            if reach < least {
+                ring(&mut c, cp.0, cp.1, least, thick, rgb);
+            } else {
+                for (k, pair) in px.windows(2).enumerate() {
+                    if d.kind == DsoKind::OpenCluster && k % 2 == 1 {
+                        continue;
+                    }
+                    if let (Some(p), Some(q)) = (pair[0], pair[1]) {
+                        c.line(p, q, thick, rgb, 1.0);
+                    }
+                }
+            }
+            if d.kind == DsoKind::Globular {
+                let k = reach.max(least).min(unit * 3.0);
+                c.line((cp.0 - k, cp.1), (cp.0 + k, cp.1), thick, rgb, 1.0);
+                c.line((cp.0, cp.1 - k), (cp.0, cp.1 + k), thick, rgb, 1.0);
+            }
+            dso_placed.push((i, cp.0 as i32, cp.1 as i32));
+            if let (true, Some(label)) = (opts.names && w >= 40 && h >= 10, dso_label(d, view.zoom)) {
+                let (col, row) = (x + ((cp.0 + reach.max(least)) / cell_w) as u16 + 1, y + (cp.1 / cell_h) as u16);
+                if col + label.chars().count() as u16 + 1 < x + w {
+                    dso_labels.push((col, row, label, rgb));
+                }
             }
         }
     }
@@ -362,7 +499,7 @@ pub fn picture(view: &View, opts: &Opts, bodies: &[Body], x: u16, y: u16, w: u16
             text.push_str(&style::rgb(label, Some((255, 190, 90)), Some((0, 0, 0)), "b"));
         }
     }
-    for (col, row, label, rgb) in body_labels.into_iter().chain(star_labels) {
+    for (col, row, label, rgb) in body_labels.into_iter().chain(dso_labels).chain(star_labels) {
         let n = label.chars().count() as u16;
         let end = col + n;
         if row >= y + h || taken.iter().any(|&(r, c0, c1)| r == row && col <= c1 && c0 <= end) {
@@ -375,7 +512,7 @@ pub fn picture(view: &View, opts: &Opts, bodies: &[Body], x: u16, y: u16, w: u16
         text.push_str(&style::rgb(&label, Some(rgb), Some((0, 0, 0)), ""));
     }
 
-    Picture { text, canvas: c, placed, mag_shown }
+    Picture { text, canvas: c, placed, mag_shown, dso_placed }
 }
 
 /// Brighten a pixel to at least `rgb` scaled by `k`: things that overlap
@@ -488,6 +625,41 @@ mod tests {
         if let Ok(path) = std::env::var("STARMAP_DUMP") {
             let v = View::new(Projection::Horizon { lst_deg: 40.0, lat_deg: 59.9 });
             let _ = std::fs::write(path, picture(&v, &o, &[], 1, 2, 190, 50, Some((10, 20))).canvas.png());
+        }
+    }
+
+    #[test]
+    fn deep_sky_objects_are_drawn_only_when_asked() {
+        assert_eq!(dsos().len(), 219);
+        let m31 = dsos().iter().find(|d| d.id == "M31").unwrap();
+        assert_eq!((m31.alt, m31.kind, m31.constellation), ("NGC 224", DsoKind::Galaxy, "And"));
+        let v = View::new(Projection::Hemisphere { north: true });
+        let off = plot(&v, &Opts::default(), &[], 1, 1, 150, 42);
+        assert!(off.dso_placed.is_empty());
+        let on = plot(&v, &Opts { dso: true, ..Opts::default() }, &[], 1, 1, 150, 42);
+        let ids: Vec<&str> = on.dso_placed.iter().map(|&(i, _, _)| dsos()[i].id).collect();
+        assert!(ids.contains(&"M31") && ids.contains(&"M13"), "northern objects missing");
+        assert!(!ids.contains(&"C99"), "the Coalsack is a southern object");
+        let pic = picture(&v, &Opts { dso: true, ..Opts::default() }, &[], 1, 2, 150, 42, Some((10, 20)));
+        assert!(pic.dso_placed.len() > 100, "{} objects in the picture", pic.dso_placed.len());
+        assert!(pic.text.contains("M31"), "the brightest objects are labelled");
+    }
+
+    /// STARMAP_DSO_DUMP=/some/dir writes three pictures with the objects on:
+    /// the northern map, and close-ups of Orion's sword and Andromeda.
+    #[test]
+    fn dump_deep_sky_pictures() {
+        let Ok(dir) = std::env::var("STARMAP_DSO_DUMP") else { return };
+        let o = Opts { dso: true, ..Opts::default() };
+        let mut v = View::new(Projection::Hemisphere { north: true });
+        let _ = std::fs::write(format!("{dir}/north.png"), picture(&v, &o, &[], 1, 2, 190, 50, Some((10, 20))).canvas.png());
+        for (name, ra, dec, zoom) in [("orion", 83.8, -5.4, 18.0), ("andromeda", 10.7, 41.3, 14.0)] {
+            v = View::new(Projection::Horizon { lst_deg: ra, lat_deg: 30.0 });
+            v.pan = v.place(ra, dec).unwrap();
+            v.zoom = zoom;
+            let p = picture(&v, &o, &[], 1, 2, 190, 50, Some((10, 20)));
+            let _ = std::fs::write(format!("{dir}/{name}.png"), p.canvas.png());
+            let _ = std::fs::write(format!("{dir}/{name}.txt"), crust::strip_ansi(&p.text));
         }
     }
 

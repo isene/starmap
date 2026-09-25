@@ -9,13 +9,15 @@ terminal shows images, braille elsewhere. Star colours are black-body
 colours for each star's temperature. Part of the
 [Fe₂O₃](https://github.com/isene/fe2o3) Rust terminal suite.
 
-Two tables live in the library, so nothing is fetched and nothing is
+Three tables live in the library, so nothing is fetched and nothing is
 cached:
 
 - **9,096 stars** from the Yale Bright Star Catalogue, with Hipparcos
   distances for 7,369 of them, plus B−V colour, spectral type, HD / HIP
   numbers and IAU proper names.
 - **150 constellation strokes** from d3-celestial.
+- **219 deep-sky objects**: every Messier and every Caldwell object,
+  with kind, magnitude, size and tilt.
 
 ![the star picker](img/screenshot-pick.png)
 
@@ -98,6 +100,16 @@ let bodies = vec![starmap::Body {
 That is how [astro](https://github.com/isene/astro) puts the sun, moon
 and planets on the sky it draws for the selected hour.
 
+## Deep-sky objects
+
+`Opts { dso: true, .. }` draws the Messier and Caldwell objects under
+the stars, each at its true size on the sky: a galaxy as a tilted
+ellipse, an open cluster dashed, a globular crossed. One too small to
+see gets a small ring. The brightest are labelled on the whole sky;
+closer in, more are, and then with their common names.
+
+`starmap::dsos()` gives the list, for a caller that wants to look one up.
+
 ## Cost
 
 A braille frame is arithmetic over the two tables and one canvas: about
@@ -118,8 +130,9 @@ shows the sky.
 ## Data
 
 Yale Bright Star Catalogue (public domain), Hipparcos parallaxes (ESA
-1997, via VizieR), IAU Catalog of Star Names, and d3-celestial's
-constellation lines (BSD 3-clause, © Olaf Frohn). Full attribution in
+1997, via VizieR), IAU Catalog of Star Names, d3-celestial's
+constellation lines (BSD 3-clause, © Olaf Frohn), and for the deep-sky
+objects NASA HEASARC's Messier table and SIMBAD (CDS, Strasbourg). Full attribution in
 [`data/README.md`](data/README.md).
 
 ## License

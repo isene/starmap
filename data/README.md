@@ -43,3 +43,28 @@ From **d3-celestial** by Olaf Frohn, BSD 3-clause:
 
 The library itself is public domain (Unlicense); this one file carries
 Olaf Frohn's notice with it.
+
+## `dso.tsv`
+
+`id, alt, name, kind, ra_deg, dec_deg, mag, major_arcmin, minor_arcmin,
+pa_deg, constellation`, tab-separated: the 110 Messier objects and the
+109 Caldwell objects. `tools/build-dso.py` writes it; the library never
+goes online.
+
+- **Kind, magnitude and size of the Messier objects**: NASA HEASARC's
+  Messier table. Public domain.
+  <https://heasarc.gsfc.nasa.gov/W3Browse/all/messier.html>
+- **Positions, and sizes and tilts where HEASARC has none**: SIMBAD,
+  operated at CDS, Strasbourg, France. Free to use; this data has made
+  use of the SIMBAD database.
+  <https://simbad.cds.unistra.fr/>
+- **Which NGC or IC object each Caldwell number is, common names, and
+  the Caldwell magnitudes**: Wikipedia's Messier and Caldwell tables.
+  Only these facts are taken, none of the text.
+- **Sizes of 15 large nebulae and star groups** that no source above
+  gives: the usual published figures, rounded, listed in the script.
+
+`kind` is one of Gx (galaxy), OC (open cluster), GC (globular), PN
+(planetary nebula), Neb (nebula), CN (cluster with nebula), SNR
+(supernova remnant), DN (dark nebula) and Ast (a double star, an
+asterism or a star cloud).

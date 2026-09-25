@@ -3,8 +3,9 @@
 //! The naked-eye sky in a terminal: real pixels through glow where the
 //! terminal shows images, braille elsewhere.
 //!
-//! Two embedded tables: 9,096 stars from the Yale Bright Star Catalogue
-//! with Hipparcos distances, and the 150 constellation stick figures.
+//! Three embedded tables: 9,096 stars from the Yale Bright Star Catalogue
+//! with Hipparcos distances, the 150 constellation stick figures, and the
+//! 219 Messier and Caldwell deep-sky objects.
 //! Two ways to look at them:
 //!
 //! * [`Projection::Horizon`] — the sky over an observer's head at an
@@ -41,6 +42,7 @@ pub use pick::{pick, Picked};
 pub use proj::{altaz, lst_deg, Projection, View};
 pub use render::{panel, panel_pixels, Body, Opts, Picture};
 
+
 use std::sync::OnceLock;
 
 /// Yale Bright Star Catalogue with Hipparcos parallaxes:
@@ -48,6 +50,118 @@ use std::sync::OnceLock;
 const STAR_DATA: &str = include_str!("../data/stars.csv");
 /// Constellation stick figures: `ABR:ra,dec ra,dec …`, one stroke each.
 const LINE_DATA: &str = include_str!("../data/constellations.csv");
+/// The Messier and Caldwell objects; see `data/README.md`.
+const DSO_DATA: &str = include_str!("../data/dso.tsv");
+
+/// What kind of deep-sky object, which decides its mark on the chart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DsoKind {
+    Galaxy,
+    OpenCluster,
+    Globular,
+    Planetary,
+    /// Emission or reflection nebula.
+    Nebula,
+    /// A cluster wrapped in its nebula (M8, M16).
+    ClusterNebula,
+    Supernova,
+    Dark,
+    /// A double star, an asterism or a star cloud (M24, M40, M73).
+    StarGroup,
+}
+
+impl DsoKind {
+    fn parse(s: &str) -> Self {
+        match s {
+            "Gx" => Self::Galaxy,
+            "OC" => Self::OpenCluster,
+            "GC" => Self::Globular,
+            "PN" => Self::Planetary,
+            "CN" => Self::ClusterNebula,
+            "SNR" => Self::Supernova,
+            "DN" => Self::Dark,
+            "Ast" => Self::StarGroup,
+            _ => Self::Nebula,
+        }
+    }
+
+    /// The kind in plain words.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Galaxy => "galaxy",
+            Self::OpenCluster => "open cluster",
+            Self::Globular => "globular cluster",
+            Self::Planetary => "planetary nebula",
+            Self::Nebula => "nebula",
+            Self::ClusterNebula => "cluster with nebula",
+            Self::Supernova => "supernova remnant",
+            Self::Dark => "dark nebula",
+            Self::StarGroup => "star group",
+        }
+    }
+}
+
+/// One deep-sky object: every Messier object and every Caldwell object.
+#[derive(Debug, Clone)]
+pub struct Dso {
+    /// `M31`, `C14`.
+    pub id: &'static str,
+    /// The NGC or IC number, e.g. `NGC 224`; empty where there is none.
+    pub alt: &'static str,
+    /// Common name, e.g. `Andromeda Galaxy`; often empty.
+    pub name: &'static str,
+    pub kind: DsoKind,
+    /// J2000 degrees.
+    pub ra: f64,
+    pub dec: f64,
+    /// Visual magnitude, where one is known (not for the Coalsack).
+    pub mag: Option<f64>,
+    /// Size along the long and short axes, in arcminutes.
+    pub major: f64,
+    pub minor: f64,
+    /// Tilt of the long axis, degrees from north through east.
+    pub pa: f64,
+    /// IAU three-letter code, e.g. `And`.
+    pub constellation: &'static str,
+}
+
+impl Dso {
+    /// `M31 Andromeda Galaxy`, or just `C9` where there is no name.
+    pub fn label(&self) -> String {
+        if self.name.is_empty() { self.id.to_string() } else { format!("{} {}", self.id, self.name) }
+    }
+}
+
+/// Every Messier and Caldwell object, Messier first. Parsed once.
+pub fn dsos() -> &'static [Dso] {
+    static DSOS: OnceLock<Vec<Dso>> = OnceLock::new();
+    DSOS.get_or_init(|| {
+        DSO_DATA
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|l| {
+                let f: Vec<&str> = l.split('\t').collect();
+                if f.len() < 11 {
+                    return None;
+                }
+                let major: f64 = f[7].parse().unwrap_or(1.0);
+                Some(Dso {
+                    id: f[0],
+                    alt: f[1],
+                    name: f[2],
+                    kind: DsoKind::parse(f[3]),
+                    ra: f[4].parse().ok()?,
+                    dec: f[5].parse().ok()?,
+                    mag: f[6].parse().ok(),
+                    major,
+                    minor: f[8].parse().unwrap_or(major),
+                    pa: f[9].parse().unwrap_or(0.0),
+                    constellation: f[10],
+                })
+            })
+            .collect()
+    })
+}
 
 /// One catalogue star. Positions are J2000 degrees.
 #[derive(Debug, Clone)]
